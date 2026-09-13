@@ -247,6 +247,54 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+print("the tooltip hook actually runs (v1.0.0 shipped broken here)")
+do
+    -- v1.0.0 called GameTooltip:GetUnit(), which does not exist in 1.12, and
+    -- threw on EVERY tooltip. The suite passed anyway because it only ever
+    -- called LinesFor() directly and never fired the hook. So this test drives
+    -- the real path: install the hooks, then show a tooltip.
+    local a = newClient("Alice", ALICE_LOG, { "Bob" })
+    activate(a)
+    a.GQ.UpdateOwnData()
+    a.GQ.data["Bob"] = { time = os.time(), quests = {
+        ["Kill Ten Boars"] = { { name = "Mottled Boar", have = 10, need = 10 } },
+    } }
+
+    local added = {}
+    GameTooltip = Stub.CreateFrame("Frame", "GameTooltip")
+    GameTooltip.AddLine = function(self, text) table.insert(added, text) end
+    GameTooltip.Show = function() end
+    ItemRefTooltip = Stub.CreateFrame("Frame", "ItemRefTooltip")
+    ItemRefTooltip.AddLine = function() end
+    ItemRefTooltip.Show = function() end
+
+    -- The tooltip's first line is the subject's name - that's what the addon
+    -- reads, since 1.12 has no GetUnit().
+    local left = Stub.CreateFrame("Frame", "GameTooltipTextLeft1")
+    left:SetText("Mottled Boar")
+
+    local ok, err = pcall(a.GQ.HookTooltips)
+    check("hooking raises no error", ok, true)
+    if not ok then print("      " .. tostring(err)) end
+
+    local fired, fireErr = pcall(function()
+        Stub.FireScript(GameTooltip, "OnShow")
+    end)
+    check("showing a tooltip raises no error", fired, true)
+    if not fired then print("      " .. tostring(fireErr)) end
+
+    check("two lines were added", table.getn(added), 2)
+    check("  the quest title", added[1], "Kill Ten Boars")
+    check("  and everyone's progress", added[2], "  you 3/10  -  |cFF66FF66Bob done|r")
+
+    -- A tooltip whose subject matches no objective must add nothing.
+    added = {}
+    left:SetText("Some Unrelated Critter")
+    Stub.FireScript(GameTooltip, "OnShow")
+    check("nothing added for an unrelated tooltip", table.getn(added), 0)
+end
+
+-- ---------------------------------------------------------------------------
 print("someone who left the group stops appearing")
 do
     local a = newClient("Alice", ALICE_LOG, { "Bob" })

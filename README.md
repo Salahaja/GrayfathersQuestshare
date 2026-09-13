@@ -1,4 +1,4 @@
-# Grayfather's Questshare (v1.0.0)
+# Grayfather's Questshare (v1.0.1)
 
 Puts your party's quest progress on the tooltip. Hover the mob or the item and see who still needs it:
 
@@ -60,7 +60,9 @@ lua tools/test_questshare.lua
 
 `vanilla_lint.lua` checks the source against what 1.12 actually runs — any Lua you can install today is 5.4 while vanilla is 5.0, so `#`, `%`, `goto`, `//` and bitwise operators all parse cleanly and then throw a script error in-game.
 
-`test_questshare.lua` runs two simulated clients against a mock quest log and checks they exchange progress correctly. 26 checks, mutation-verified: failing to restore the quest log selection, failing to strip the localised kill suffix, showing people who left the group, or oversizing the chunks each make the suite fail.
+`test_questshare.lua` runs two simulated clients against a mock quest log and checks they exchange progress correctly. 32 checks, mutation-verified: failing to restore the quest log selection, failing to strip the localised kill suffix, showing people who left the group, oversizing the chunks, or calling a tooltip API that does not exist in 1.12 each make the suite fail.
+
+That last one is why the suite now drives the tooltip hook for real rather than calling its helpers directly. v1.0.0 shipped calling `GameTooltip:GetUnit()`, which does not exist in vanilla, and threw on every tooltip - the tests passed because they exercised the line-building function and never the hook that calls it.
 
 ## Author
 

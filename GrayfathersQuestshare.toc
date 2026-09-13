@@ -1,5 +1,5 @@
 ## Interface: 11200
-## Version: 1.0.0
+## Version: 1.0.1
 ## Title: Grayfather's Questshare
 ## Notes: Puts your party's quest progress on mob and item tooltips - hover the thing and see who still needs it, alongside your own count.
 ## Author: You

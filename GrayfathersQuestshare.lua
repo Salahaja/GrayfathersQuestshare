@@ -34,7 +34,7 @@
 GQ = {}
 GQ.ADDON_NAME = "GrayfathersQuestshare"
 GQ.PREFIX     = "GQSHARE"
-GQ.VERSION    = "1.0.0"
+GQ.VERSION    = "1.0.1"
 
 -- [playerName] = { time = <when heard>, quests = { [questTitle] = { {name, have, need}, ... } } }
 GQ.data   = {}
@@ -344,45 +344,34 @@ local function AddLines(tooltip, target)
     tooltip:Show()
 end
 
-local function ItemNameFromLink(link)
-    if not link then return nil end
-    local _, _, name = string.find(link, "%[(.-)%]")
-    return name
+
+-- The tooltip's first line is the NAME of whatever it's showing - a mob, an
+-- item in a bag, a loot slot, a chat link - so reading it covers every case with
+-- one hook instead of one hook per Set* method, and can't double up by firing
+-- through two paths at once. This is what pfQuest, ItemRack and pfExtend all do
+-- on this client.
+--
+-- The obvious-looking GameTooltip:GetUnit() does NOT exist in 1.12 - it's a
+-- later-expansion API, and calling it threw on every single tooltip.
+local function TooltipSubject(tooltip)
+    local name = tooltip:GetName()
+    if not name then return nil end
+    local left = getglobal(name .. "TextLeft1")
+    return left and left:GetText() or nil
+end
+
+local function HookOne(tooltip)
+    if not tooltip then return end
+    local origOnShow = tooltip:GetScript("OnShow")
+    tooltip:SetScript("OnShow", function()
+        if origOnShow then pcall(origOnShow) end
+        AddLines(this or tooltip, TooltipSubject(this or tooltip))
+    end)
 end
 
 function GQ.HookTooltips()
-    -- Units: GetUnit() tells us whether this tooltip is actually showing a unit,
-    -- which is cleaner than guessing from "mouseover" and works for any unit the
-    -- tooltip was pointed at.
-    local origOnShow = GameTooltip:GetScript("OnShow")
-    GameTooltip:SetScript("OnShow", function()
-        if origOnShow then pcall(origOnShow) end
-        local name = GameTooltip:GetUnit()
-        if name then AddLines(GameTooltip, name) end
-    end)
-
-    local origSetBagItem = GameTooltip.SetBagItem
-    GameTooltip.SetBagItem = function(self, bag, slot)
-        local ret = origSetBagItem(self, bag, slot)
-        AddLines(self, ItemNameFromLink(GetContainerItemLink(bag, slot)))
-        return ret
-    end
-
-    local origSetLootItem = GameTooltip.SetLootItem
-    if origSetLootItem then
-        GameTooltip.SetLootItem = function(self, slot)
-            local ret = origSetLootItem(self, slot)
-            AddLines(self, ItemNameFromLink(GetLootSlotLink(slot)))
-            return ret
-        end
-    end
-
-    local origSetHyperlink = GameTooltip.SetHyperlink
-    GameTooltip.SetHyperlink = function(self, link, count)
-        local ret = origSetHyperlink(self, link, count)
-        AddLines(self, ItemNameFromLink(link))
-        return ret
-    end
+    HookOne(GameTooltip)
+    HookOne(ItemRefTooltip) -- links clicked in chat
 end
 
 -- ---------------------------------------------------------------------------------------------
