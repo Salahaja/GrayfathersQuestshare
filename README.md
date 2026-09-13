@@ -1,4 +1,4 @@
-# Grayfather's Questshare (v1.2.0)
+# Grayfather's Questshare (v1.3.0)
 
 Puts your party's quest progress on the tooltip. Hover the mob or the item and see who still needs it:
 
@@ -39,6 +39,19 @@ Everyone who wants to be included needs the addon. Progress is shared automatica
 ```
 
 Hover any mob or quest item. If anyone in the group has an objective matching it, the lines appear under the normal tooltip.
+
+### Hovering a quest in your quest log
+
+Mouse over any row in the quest log and the tooltip says who else in your group is on it:
+
+```
+Kill Ten Boars
+  also on this quest:
+    Bob - done
+    Cara - 4/10
+```
+
+A quest nobody else has says so outright, rather than leaving you to wonder whether it just failed to load. If nobody in the group is sharing at all, it stays quiet instead of putting that line on every quest you hover.
 
 ### Are we on the same quest?
 

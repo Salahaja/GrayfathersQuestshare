@@ -350,6 +350,64 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+print("hovering a quest log row shows who else is on it")
+do
+    local a = newClient("Alice", ALICE_LOG, { "Bob" })
+    activate(a)
+    a.GQ.UpdateOwnData()
+    a.GQ.data["Bob"] = { time = os.time(), quests = {
+        ["Kill Ten Boars"] = { { name = "Mottled Boar", have = 10, need = 10 } },
+    } }
+
+    local added, shown = {}, false
+    GameTooltip = Stub.CreateFrame("Frame", "GameTooltip")
+    GameTooltip.AddLine = function(self, text) table.insert(added, text) end
+    GameTooltip.SetText = function(self, text) table.insert(added, text) end
+    GameTooltip.SetOwner = function() end
+    GameTooltip.IsShown = function() return false end
+    GameTooltip.Show = function() shown = true end
+    GameTooltip.Hide = function() end
+
+    -- The quest log rows: the default UI sets each button's ID to the quest
+    -- index, which is how we know which quest is being hovered.
+    local row = Stub.CreateFrame("Button", "QuestLogTitle1")
+    row.GetID = function() return 2 end -- ALICE_LOG[2] = "Kill Ten Boars"
+    local header = Stub.CreateFrame("Button", "QuestLogTitle2")
+    header.GetID = function() return 1 end -- ALICE_LOG[1] is a header
+
+    local ok, err = pcall(a.GQ.HookQuestLog)
+    check("hooking the quest log raises no error", ok, true)
+    if not ok then print("      " .. tostring(err)) end
+
+    local fired, ferr = pcall(function() Stub.FireScript(row, "OnEnter") end)
+    check("hovering a row raises no error", fired, true)
+    if not fired then print("      " .. tostring(ferr)) end
+    check("the tooltip was shown", shown, true)
+    check("titled with the quest", added[1], "Kill Ten Boars")
+    check("  a heading", added[2], "also on this quest:")
+    check("  and Bob's standing", added[3], "  Bob - done")
+
+    -- A quest only you are on should say so rather than leave you guessing.
+    added, shown = {}, false
+    row.GetID = function() return 3 end -- "Gather Hides", Alice only
+    Stub.FireScript(row, "OnEnter")
+    check("solo quest says nobody else has it", added[2], "nobody else in your group has this")
+
+    -- Headers are not quests.
+    added, shown = {}, false
+    Stub.FireScript(header, "OnEnter")
+    check("headers show nothing", table.getn(added), 0)
+
+    -- And with nobody sharing at all, stay silent rather than announcing
+    -- "nobody else has this" on every single quest.
+    a.GQ.data["Bob"] = nil
+    added, shown = {}, false
+    row.GetID = function() return 2 end
+    Stub.FireScript(row, "OnEnter")
+    check("silent when nobody is sharing", table.getn(added), 0)
+end
+
+-- ---------------------------------------------------------------------------
 print("someone who left the group stops appearing")
 do
     local a = newClient("Alice", ALICE_LOG, { "Bob" })

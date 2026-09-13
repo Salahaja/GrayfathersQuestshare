@@ -34,7 +34,7 @@
 GQ = {}
 GQ.ADDON_NAME = "GrayfathersQuestshare"
 GQ.PREFIX     = "GQSHARE"
-GQ.VERSION    = "1.2.0"
+GQ.VERSION    = "1.3.0"
 
 -- [playerName] = { time = <when heard>, quests = { [questTitle] = { {name, have, need}, ... } } }
 GQ.data   = {}
@@ -473,9 +473,99 @@ local function HookOne(tooltip)
     end)
 end
 
+-- Who else in the group is on `title`, and where they stand. Excludes you: the
+-- quest log is already showing your own progress right there.
+function GQ.WhoIsOn(title)
+    local me, others = GQ.Me(), {}
+    for _, name in ipairs(OrderedNames()) do
+        if name ~= me and IsInMyGroup(name) then
+            local objectives = GQ.data[name].quests[title]
+            if objectives then
+                table.insert(others, { name = name, summary = GQ.SummarizeQuest(objectives) })
+            end
+        end
+    end
+    return others
+end
+
+-- Is anyone at all sharing with us right now? Used to stay silent rather than
+-- announce "nobody else has this" on every quest when the truth is simply that
+-- nobody is sharing.
+local function AnyoneSharing()
+    local me = GQ.Me()
+    for name in pairs(GQ.data) do
+        if name ~= me and IsInMyGroup(name) then return true end
+    end
+    return false
+end
+
+-- Hovering a row in the quest log. The button's ID is the quest log index (the
+-- default UI sets it in QuestLog_Update), so the title comes from
+-- GetQuestLogTitle(index) - which takes an index and therefore does NOT touch
+-- the global quest selection. That matters here of all places: mangling the
+-- selection while the player is moused over their quest log is precisely how
+-- the wrong quest gets abandoned.
+function GQ.ShowQuestLogTooltip(button)
+    local index = button:GetID()
+    if not index or index < 1 then return end
+
+    local title, _, _, isHeader = GetQuestLogTitle(index)
+    if not title or isHeader then return end
+    if not AnyoneSharing() then return end
+
+    local others = GQ.WhoIsOn(title)
+
+    -- The default handler only shows a tooltip when the title is truncated, so
+    -- there may be nothing on screen to append to yet.
+    if not GameTooltip:IsShown() then
+        GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+        GameTooltip:SetText(title, 1, 0.82, 0)
+    end
+
+    if table.getn(others) == 0 then
+        GameTooltip:AddLine("nobody else in your group has this", 0.6, 0.6, 0.6)
+    else
+        GameTooltip:AddLine("also on this quest:", 0.6, 0.6, 0.6)
+        for _, o in ipairs(others) do
+            if o.summary == "done" then
+                GameTooltip:AddLine("  " .. o.name .. " - done", 0.4, 1, 0.4)
+            else
+                GameTooltip:AddLine("  " .. o.name .. " - " .. o.summary, 1, 1, 1)
+            end
+        end
+    end
+    GameTooltip:Show()
+end
+
+-- Hooked lazily and idempotently: the buttons exist from the start, but another
+-- addon may rebuild the quest log, and re-running this simply skips what's
+-- already hooked.
+function GQ.HookQuestLog()
+    local i = 1
+    while true do
+        local button = getglobal("QuestLogTitle" .. i)
+        if not button then break end
+        if not button.gqHooked then
+            button.gqHooked = true
+            local origEnter = button:GetScript("OnEnter")
+            button:SetScript("OnEnter", function()
+                if origEnter then pcall(origEnter) end
+                pcall(GQ.ShowQuestLogTooltip, this)
+            end)
+            local origLeave = button:GetScript("OnLeave")
+            button:SetScript("OnLeave", function()
+                if origLeave then pcall(origLeave) end
+                GameTooltip:Hide()
+            end)
+        end
+        i = i + 1
+    end
+end
+
 function GQ.HookTooltips()
     HookOne(GameTooltip)
     HookOne(ItemRefTooltip) -- links clicked in chat
+    GQ.HookQuestLog()
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -608,6 +698,9 @@ ev:SetScript("OnEvent", function()
     elseif event == "QUEST_LOG_UPDATE" then
         -- Debounced: this fires repeatedly for a single kill.
         GQ.scanTimer = GQ.SCAN_DEBOUNCE
+        -- Cheap and idempotent: catches quest log rows built or replaced after
+        -- we first hooked, without needing to know which addon did it.
+        GQ.HookQuestLog()
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         GQ.scanTimer = GQ.SCAN_DEBOUNCE
