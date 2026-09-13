@@ -34,7 +34,7 @@
 GQ = {}
 GQ.ADDON_NAME = "GrayfathersQuestshare"
 GQ.PREFIX     = "GQSHARE"
-GQ.VERSION    = "1.0.1"
+GQ.VERSION    = "1.1.0"
 
 -- [playerName] = { time = <when heard>, quests = { [questTitle] = { {name, have, need}, ... } } }
 GQ.data   = {}
@@ -45,10 +45,20 @@ GQ.SEND_INTERVAL   = 0.4
 GQ.SCAN_DEBOUNCE   = 1.5
 GQ.PEER_STALE_AFTER = 300 -- drop someone's progress 5 minutes after their last update
 
+GQ.PRESENCE_INTERVAL = 30 -- seconds between "I'm running this addon" beacons
+
 GQ.sendQueue = {}
 GQ.sendTimer = 0
 GQ.scanTimer = nil
+GQ.presenceTimer = 0
 GQ.incoming  = {}
+
+-- [name] = when we last heard from them at all. Separate from GQ.data because
+-- "has the addon" and "has shared progress" are different facts, and telling
+-- them apart is the whole difference between "they need to install it" and
+-- "something is broken".
+GQ.present = {}
+
 GQ.stats = { sent = 0, received = 0 }
 
 -- ---------------------------------------------------------------------------------------------
@@ -198,8 +208,22 @@ function GQ.DrainQueue()
         GQ.sendQueue = {}
         return
     end
-    pcall(SendAddonMessage, GQ.PREFIX, msg, channel)
+    local ok, err = pcall(SendAddonMessage, GQ.PREFIX, msg, channel)
     GQ.stats.sent = GQ.stats.sent + 1
+    if not ok then
+        GQ.Say("|cFFFF5179SendAddonMessage failed:|r " .. tostring(err))
+    else
+        GQ.Debug("sent [" .. channel .. "] " .. string.sub(msg, 1, 60))
+    end
+end
+
+-- A few bytes saying "someone here is running this addon". It exists so the
+-- group roster can distinguish "they haven't installed it" from "it's installed
+-- and something is broken" - without it, both look identical from the outside,
+-- which is exactly the hole this addon fell into on first contact.
+function GQ.SendPresence()
+    if not GQ.Channel() then return end
+    GQ.Queue("P~" .. GQ.Me())
 end
 
 function GQ.SendProgress()
@@ -231,9 +255,25 @@ end
 function GQ.OnAddonMessage(msg, sender)
     if sender == GQ.Me() then return end
     GQ.stats.received = GQ.stats.received + 1
+    GQ.Debug("recv from " .. tostring(sender) .. ": " .. string.sub(msg, 1, 60))
 
     local _, _, kind, rest = string.find(msg, "^(%a)~(.+)$")
-    if not kind then return end
+    if not kind then
+        GQ.Debug("  unparseable - the message was altered in transit")
+        return
+    end
+
+    -- Anything we hear from them proves they're running this.
+    GQ.present[sender] = time()
+
+    if kind == "P" then
+        -- Answer a beacon with our progress, so a newcomer gets data at once
+        -- instead of waiting for our next quest update. Deliberately NOT another
+        -- beacon: two clients answering each other's beacons forever is a loop.
+        GQ.Debug("  " .. sender .. " is running Questshare")
+        GQ.SendProgress()
+        return
+    end
 
     if kind == "H" then
         local _, _, nonce, total = string.find(rest, "^(%d+)~(%d+)$")
@@ -394,6 +434,7 @@ SlashCmdList["GRAYFATHERSQUESTSHARE"] = function(msg)
             GQ.Say("you're not in a party or raid - there's nobody to share with.")
         else
             GQ.UpdateOwnData()
+            GQ.SendPresence()
             GQ.SendProgress()
             GQ.Say("sharing your quest progress...")
         end
@@ -404,18 +445,46 @@ SlashCmdList["GRAYFATHERSQUESTSHARE"] = function(msg)
             "|cFFFF5179solo|r - nothing is shared until you're in a party"))
         GQ.Say("sent " .. GQ.stats.sent .. ", received " .. GQ.stats.received .. " this session")
 
-        local any = false
-        for _, name in ipairs(OrderedNames()) do
-            local entry = GQ.data[name]
-            local n = 0
-            for _ in pairs(entry.quests) do n = n + 1 end
-            local age = entry.time and math.floor((time() - entry.time) / 60) or 0
-            GQ.Say("  " .. (name == GQ.Me() and ("|cFF00FF7F" .. name .. " (you)|r") or name) ..
-                " - " .. n .. " quest(s) with objectives, " .. age .. "m ago")
-            any = true
+        -- Walk the actual group rather than only what we've received, so
+        -- somebody who hasn't answered is visibly present-but-silent rather than
+        -- simply missing. That difference is the whole diagnosis.
+        local roster = {}
+        for i = 1, GetNumRaidMembers() do
+            local n = UnitName("raid" .. i)
+            if n and n ~= GQ.Me() then table.insert(roster, n) end
         end
-        if not any then
-            GQ.Say("nobody's progress yet. Party members need this addon too.")
+        for i = 1, GetNumPartyMembers() do
+            local n = UnitName("party" .. i)
+            if n and n ~= GQ.Me() then table.insert(roster, n) end
+        end
+
+        local me = GQ.Me()
+        local own = GQ.data[me]
+        local ownCount = 0
+        if own then for _ in pairs(own.quests) do ownCount = ownCount + 1 end end
+        GQ.Say("  |cFF00FF7F" .. tostring(me) .. " (you)|r - " .. ownCount ..
+            " quest(s) with counted objectives")
+
+        local silent = 0
+        for _, name in ipairs(roster) do
+            local entry = GQ.data[name]
+            if entry then
+                local n = 0
+                for _ in pairs(entry.quests) do n = n + 1 end
+                GQ.Say("  " .. name .. " - |cFF00FF7F" .. n .. " quest(s) shared|r")
+            elseif GQ.present[name] then
+                GQ.Say("  " .. name .. " - |cFFFFCC00has the addon, no progress yet|r")
+            else
+                GQ.Say("  " .. name .. " - |cFFFF5179silent|r (no addon, or not reaching us)")
+                silent = silent + 1
+            end
+        end
+
+        if table.getn(roster) == 0 then
+            GQ.Say("nobody else in the group.")
+        elseif silent > 0 and GQ.stats.received == 0 then
+            GQ.Say("|cFFFF5179Nothing has been received at all this session.|r If they do have " ..
+                "it running, try |cFFFFFFFF/gq debug|r on both and |cFFFFFFFF/gq sync|r on one.")
         end
 
     else
@@ -458,6 +527,7 @@ ev:SetScript("OnEvent", function()
         end
         GQ.dirty = true
         GQ.scanTimer = GQ.SCAN_DEBOUNCE
+        GQ.presenceTimer = GQ.PRESENCE_INTERVAL -- beacon on the next tick
     end
 end)
 
@@ -477,5 +547,11 @@ ev:SetScript("OnUpdate", function()
     if GQ.sendTimer >= GQ.SEND_INTERVAL then
         GQ.sendTimer = 0
         GQ.DrainQueue()
+    end
+
+    GQ.presenceTimer = GQ.presenceTimer + elapsed
+    if GQ.presenceTimer >= GQ.PRESENCE_INTERVAL then
+        GQ.presenceTimer = 0
+        GQ.SendPresence()
     end
 end)

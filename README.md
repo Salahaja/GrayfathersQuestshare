@@ -1,4 +1,4 @@
-# Grayfather's Questshare (v1.0.1)
+# Grayfather's Questshare (v1.1.0)
 
 Puts your party's quest progress on the tooltip. Hover the mob or the item and see who still needs it:
 
