@@ -1,4 +1,4 @@
-# Grayfather's Questshare (v1.1.0)
+# Grayfather's Questshare (v1.2.0)
 
 Puts your party's quest progress on the tooltip. Hover the mob or the item and see who still needs it:
 
@@ -32,12 +32,27 @@ So this addon saves `GetQuestLogSelection()` before scanning and restores it aft
 Everyone who wants to be included needs the addon. Progress is shared automatically with your party or raid whenever your quest log changes.
 
 ```
-/gq            status: your group, what's been shared, whose progress is known
+/gq            status: who in your group is running this, and what has been shared
+/gq quests     every quest across the group, the ones you share listed first
 /gq sync       share right now instead of waiting
-/gq debug      verbose logging
+/gq debug      verbose logging of every message sent and received
 ```
 
 Hover any mob or quest item. If anyone in the group has an objective matching it, the lines appear under the normal tooltip.
+
+### Are we on the same quest?
+
+The tooltip answers that only when you happen to be hovering the right thing, so `/gq quests` answers it directly - every quest anyone in the group is on, with the shared ones listed first and highlighted:
+
+```
+2 quest(s) in common with your group:
+  Kill Ten Boars - you 3/10, Bob done
+  Wanted: Hogger - you 0/1, Bob 0/1
+  Gather Hides - you 0/2 objectives
+  Deliver the Package - Bob 0/1
+```
+
+A quest with several objectives reports how many are finished rather than a raw count, because "2/5" would be ambiguous between "two of five items" and "two of five objectives".
 
 ## How matching works
 

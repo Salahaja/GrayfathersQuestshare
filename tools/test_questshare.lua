@@ -295,6 +295,61 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+print("the quest overview answers 'are we on the same quest'")
+do
+    local a = newClient("Alice", ALICE_LOG, { "Bob" })
+    activate(a)
+    a.GQ.UpdateOwnData()
+    a.GQ.data["Bob"] = { time = os.time(), quests = {
+        -- Shared with Alice.
+        ["Kill Ten Boars"] = { { name = "Mottled Boar", have = 10, need = 10 } },
+        -- Bob's alone.
+        ["Deliver the Package"] = { { name = "Package", have = 0, need = 1 } },
+    } }
+
+    local rows = a.GQ.QuestOverview()
+    check("every quest across the group", table.getn(rows), 3)
+
+    -- Shared first: that's the question being answered.
+    check("shared quest is listed first", rows[1].title, "Kill Ten Boars")
+    check("  and is marked shared", rows[1].shared, true)
+    check("  with both people", table.getn(rows[1].who), 2)
+    check("  you first", rows[1].who[1].name, "Alice")
+    check("  your standing", rows[1].who[1].summary, "3/10")
+    check("  and Bob's", rows[1].who[2].summary, "done")
+
+    -- Then yours, then theirs.
+    check("your own quest next", rows[2].title, "Gather Hides")
+    check("  not marked shared", rows[2].shared, false)
+    check("their solo quest last", rows[3].title, "Deliver the Package")
+    check("  and is theirs, not yours", rows[3].mine, false)
+end
+
+-- ---------------------------------------------------------------------------
+print("a multi-objective quest summarises as objectives done, not a raw count")
+do
+    local a = newClient("Alice", ALICE_LOG, { "Bob" })
+    activate(a)
+    -- "Gather Hides" has two objectives: 2/5 and 0/4. Reporting "2/5" would
+    -- read as though the quest were 40% done.
+    check("two objectives, none finished", a.GQ.SummarizeQuest({
+        { name = "Boar Hide", have = 2, need = 5 },
+        { name = "Tough Leather", have = 0, need = 4 },
+    }), "0/2 objectives")
+    check("one of two finished", a.GQ.SummarizeQuest({
+        { name = "Boar Hide", have = 5, need = 5 },
+        { name = "Tough Leather", have = 1, need = 4 },
+    }), "1/2 objectives")
+    check("all finished reads plainly", a.GQ.SummarizeQuest({
+        { name = "Boar Hide", have = 5, need = 5 },
+        { name = "Tough Leather", have = 4, need = 4 },
+    }), "done")
+    check("a single objective keeps its real count", a.GQ.SummarizeQuest({
+        { name = "Mottled Boar", have = 3, need = 10 },
+    }), "3/10")
+end
+
+-- ---------------------------------------------------------------------------
 print("someone who left the group stops appearing")
 do
     local a = newClient("Alice", ALICE_LOG, { "Bob" })

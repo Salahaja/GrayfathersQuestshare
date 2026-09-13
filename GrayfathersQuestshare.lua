@@ -34,7 +34,7 @@
 GQ = {}
 GQ.ADDON_NAME = "GrayfathersQuestshare"
 GQ.PREFIX     = "GQSHARE"
-GQ.VERSION    = "1.1.0"
+GQ.VERSION    = "1.2.0"
 
 -- [playerName] = { time = <when heard>, quests = { [questTitle] = { {name, have, need}, ... } } }
 GQ.data   = {}
@@ -374,6 +374,70 @@ function GQ.LinesFor(target)
     return lines
 end
 
+-- A one-line summary of somebody's standing on a quest: the raw count when
+-- there's a single objective, or how many objectives are finished when there
+-- are several, since "2/5" would be ambiguous between the two.
+function GQ.SummarizeQuest(objectives)
+    local total = table.getn(objectives)
+    if total == 0 then return "?" end
+    if total == 1 then
+        local o = objectives[1]
+        if o.have >= o.need then return "done" end
+        return o.have .. "/" .. o.need
+    end
+    local done = 0
+    for _, o in ipairs(objectives) do
+        if o.have >= o.need then done = done + 1 end
+    end
+    if done >= total then return "done" end
+    return done .. "/" .. total .. " objectives"
+end
+
+-- Every quest anyone in the group is on, and where each of them stands. Sorted
+-- so the shared ones come first, because "are we on the same quest" is the
+-- question this answers and a wall of solo quests buries it.
+function GQ.QuestOverview()
+    local me = GQ.Me()
+    local titles, seen = {}, {}
+
+    for _, name in ipairs(OrderedNames()) do
+        if IsInMyGroup(name) then
+            for title in pairs(GQ.data[name].quests) do
+                if not seen[title] then
+                    seen[title] = true
+                    table.insert(titles, title)
+                end
+            end
+        end
+    end
+    table.sort(titles)
+
+    local rows = {}
+    for _, title in ipairs(titles) do
+        local who, mine = {}, false
+        for _, name in ipairs(OrderedNames()) do
+            if IsInMyGroup(name) then
+                local objectives = GQ.data[name].quests[title]
+                if objectives then
+                    if name == me then mine = true end
+                    table.insert(who, {
+                        name = name,
+                        summary = GQ.SummarizeQuest(objectives),
+                    })
+                end
+            end
+        end
+        table.insert(rows, { title = title, who = who, mine = mine, shared = table.getn(who) > 1 })
+    end
+
+    table.sort(rows, function(a, b)
+        if a.shared ~= b.shared then return a.shared end
+        if a.mine ~= b.mine then return a.mine end
+        return a.title < b.title
+    end)
+    return rows
+end
+
 local function AddLines(tooltip, target)
     local lines = GQ.LinesFor(target)
     if table.getn(lines) == 0 then return end
@@ -428,6 +492,35 @@ SlashCmdList["GRAYFATHERSQUESTSHARE"] = function(msg)
         GQ.config.debug = not GQ.config.debug
         GQ_Config = GQ.config
         GQ.Say("debug: " .. (GQ.config.debug and "|cFF00FF7Fon|r" or "|cFFFF5179off|r"))
+
+    elseif cmd == "quests" or cmd == "common" then
+        local rows = GQ.QuestOverview()
+        if table.getn(rows) == 0 then
+            GQ.Say("no quest data yet - see |cFFFFFFFF/gq|r for whether anyone is sharing.")
+        else
+            local sharedCount = 0
+            for _, row in ipairs(rows) do
+                if row.shared then sharedCount = sharedCount + 1 end
+            end
+            GQ.Say(sharedCount .. " quest(s) in common with your group:")
+
+            for _, row in ipairs(rows) do
+                local parts = {}
+                for _, w in ipairs(row.who) do
+                    local label = (w.name == GQ.Me()) and "you" or w.name
+                    if w.summary == "done" then
+                        table.insert(parts, "|cFF66FF66" .. label .. " done|r")
+                    else
+                        table.insert(parts, label .. " " .. w.summary)
+                    end
+                end
+                -- Shared quests in gold, everything else dimmed: the point of the
+                -- list is what you have in common, not a full inventory of
+                -- everyone's log.
+                local colour = row.shared and "|cFFFFCC00" or "|cFF888888"
+                GQ.Say("  " .. colour .. row.title .. "|r - " .. table.concat(parts, ", "))
+            end
+        end
 
     elseif cmd == "sync" then
         if not GQ.Channel() then
@@ -488,7 +581,7 @@ SlashCmdList["GRAYFATHERSQUESTSHARE"] = function(msg)
         end
 
     else
-        GQ.Say("usage: /gq, /gq sync, /gq debug")
+        GQ.Say("usage: /gq, /gq quests, /gq sync, /gq debug")
     end
 end
 
