@@ -551,6 +551,95 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+print("a mob shows the quest ITEM it drops (optional pfQuest lookup)")
+do
+    -- The reported gap: hovering a boar showed "Kill Ten Boars" but never the
+    -- "Boar Hide 2/5" objective the same boar drops, because that objective is
+    -- named after the item and nothing in the Blizzard API links the two.
+    local a = newClient("Alice", ALICE_LOG, { "Bob" })
+    activate(a)
+
+    -- A stand-in for pfQuest's database, shaped the way the real one is:
+    -- items.data[id].U maps unit id -> drop chance, units.loc maps id -> name.
+    pfDB = {
+        items = { loc = { [4231] = "Boar Hide" },
+                  data = { [4231] = { U = { [113] = 45 }, R = { [900] = 30 } } } },
+        units = { loc = { [113] = "Mottled Boar", [114] = "Elder Boar" } },
+        refloot = { data = { [900] = { U = { [114] = 30 } } } },
+    }
+    pfDatabase = {
+        GetIDByName = function(self, name, db)
+            local out = {}
+            for id, loc in pairs(pfDB[db] and pfDB[db].loc or {}) do
+                if loc == name then out[id] = loc end
+            end
+            return out
+        end,
+    }
+
+    a.GQ.data["Bob"] = { time = os.time(), quests = {
+        ["Gather Hides"] = { { name = "Boar Hide", have = 2, need = 5 } },
+    } }
+
+    check("the database is detected", a.GQ.HasQuestDB(), true)
+
+    local lines = a.GQ.LinesFor("Mottled Boar")
+    check("the boar now shows the hide objective", table.getn(lines), 1)
+    check("  named for the quest", lines[1].title, "Gather Hides")
+    check("  with the party count", lines[1].detail, "Bob 2/5")
+
+    -- Reference loot tables matter: many mobs point at a shared table rather
+    -- than listing the item themselves.
+    check("a mob from a shared loot table counts too",
+        table.getn(a.GQ.LinesFor("Elder Boar")), 1)
+
+    -- And an unrelated mob still shows nothing.
+    check("an unrelated mob is unaffected", table.getn(a.GQ.LinesFor("Kobold Miner")), 0)
+
+    pfDB, pfDatabase = nil, nil
+end
+
+-- ---------------------------------------------------------------------------
+print("without pfQuest it degrades quietly rather than erroring")
+do
+    local a = newClient("Alice", ALICE_LOG, { "Bob" })
+    activate(a)
+    pfDB, pfDatabase = nil, nil
+
+    a.GQ.data["Bob"] = { time = os.time(), quests = {
+        ["Gather Hides"] = { { name = "Boar Hide", have = 2, need = 5 } },
+    } }
+
+    check("no database detected", a.GQ.HasQuestDB(), false)
+    local ok, lines = pcall(a.GQ.LinesFor, "Mottled Boar")
+    check("hovering raises no error", ok, true)
+    check("  and simply adds no drop line", ok and table.getn(lines) or -1, 0)
+
+    -- Name matching must still work with no database at all.
+    check("the item itself still matches by name",
+        table.getn(a.GQ.LinesFor("Boar Hide")), 1)
+end
+
+-- ---------------------------------------------------------------------------
+print("a database that has changed shape is survived, not trusted")
+do
+    local a = newClient("Alice", ALICE_LOG, { "Bob" })
+    activate(a)
+    -- Shaped like a future pfQuest that moved things around.
+    pfDB = { items = { loc = {}, data = {} }, units = { loc = {} } }
+    pfDatabase = { GetIDByName = function() error("restructured") end }
+
+    a.GQ.data["Bob"] = { time = os.time(), quests = {
+        ["Gather Hides"] = { { name = "Boar Hide", have = 2, need = 5 } },
+    } }
+
+    local ok, lines = pcall(a.GQ.LinesFor, "Mottled Boar")
+    check("a broken lookup does not break the tooltip", ok, true)
+    check("  it just adds nothing", ok and table.getn(lines) or -1, 0)
+    pfDB, pfDatabase = nil, nil
+end
+
+-- ---------------------------------------------------------------------------
 print("")
 if failures == 0 then
     print("all " .. checks .. " checks passed")

@@ -1,4 +1,4 @@
-# Grayfather's Questshare (v1.4.0)
+# Grayfather's Questshare (v1.5.0)
 
 Puts your party's quest progress on the tooltip. Hover the mob or the item and see who still needs it:
 
@@ -35,6 +35,7 @@ Everyone who wants to be included needs the addon. Progress is shared automatica
 /gq            status: who in your group is running this, and what has been shared
 /gq quests     every quest across the group, the ones you share listed first
 /gq self on|off  show your own progress on tooltips too (off by default)
+/gq drops on|off show party progress for quest items a mob drops (needs pfQuest)|off  show your own progress on tooltips too (off by default)
 /gq sync       share right now instead of waiting
 /gq debug      verbose logging of every message sent and received
 ```
@@ -69,6 +70,14 @@ The tooltip answers that only when you happen to be hovering the right thing, so
 ```
 
 A quest with several objectives reports how many are finished rather than a raw count, because "2/5" would be ambiguous between "two of five items" and "two of five objectives".
+
+## Drop objectives on the mob that drops them
+
+Objectives are matched by name, so a kill objective (`Mottled Boar slain: 3/10`) matches the boar you hover, while a drop objective (`Boar Hide: 2/5`) matches the **item**. Nothing in the Blizzard quest API says which mobs drop which quest items, so on its own the boar can never show the hide.
+
+If **pfQuest** is installed, its database does know - that is how it puts quest markers on mobs - so Questshare uses it to show drop objectives on the mobs that drop them. Shared reference loot tables are followed too, since many mobs point at one table rather than listing the item themselves.
+
+This is strictly optional and deliberately defensive. Every read is guarded: if pfQuest is absent, or restructures its database in some future version, the lookup yields nothing and everything else keeps working exactly as before. `/gq drops off` disables it outright.
 
 ## How matching works
 

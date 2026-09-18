@@ -34,7 +34,7 @@
 GQ = {}
 GQ.ADDON_NAME = "GrayfathersQuestshare"
 GQ.PREFIX     = "GQSHARE"
-GQ.VERSION    = "1.4.0"
+GQ.VERSION    = "1.5.0"
 
 -- [playerName] = { time = <when heard>, quests = { [questTitle] = { {name, have, need}, ... } } }
 GQ.data   = {}
@@ -458,6 +458,93 @@ end
 -- Finds every quest where SOMEONE has an objective matching `target`, and
 -- returns lines ready to add to a tooltip. Matching is by objective name against
 -- the hovered mob or item name, case-insensitively.
+-- ---------------------------------------------------------------------------------------------
+-- Optional pfQuest integration: which mobs drop a quest item
+-- ---------------------------------------------------------------------------------------------
+--
+-- Objectives are matched by NAME against whatever you hover, which works
+-- perfectly for kills ("Mottled Boar slain: 3/10" vs a Mottled Boar) and not at
+-- all for drops ("Boar Hide: 2/5" is named after the item, not the boar it comes
+-- off). The Blizzard quest API never says which mobs drop which quest items, so
+-- unaided there is nothing to match on.
+--
+-- pfQuest's database does know, because that is how it puts quest markers on
+-- mobs: pfDB.items.data[itemId].U is a map of unit id -> drop chance, and .R
+-- points at shared reference loot tables that carry their own .U.
+--
+-- This is deliberately OPTIONAL. Everything is read through pcall behind a
+-- capability check, and if pfQuest is absent, or restructures its database in a
+-- future version, the lookup yields nothing and Questshare goes on working
+-- exactly as it did before - no errors, just no drop lines. It is an integration
+-- against another addon's internals, and that is the failure mode it should have.
+--
+-- The lookup is inverted on purpose. The obvious direction - hovered mob name ->
+-- unit ids - means scanning pfDB.units.loc, thousands of entries, on every
+-- single tooltip. Instead each item objective resolves ONCE to the set of mob
+-- NAMES that drop it (unit ids convert to names by direct index, which is
+-- cheap), and hovering is then a table lookup.
+GQ.dropNames = {} -- [objectiveName] = { [mobName] = true }, or false when unknown
+
+function GQ.HasQuestDB()
+    if not pfDB or not pfDatabase then return false end
+    if type(pfDatabase.GetIDByName) ~= "function" then return false end
+    if not pfDB["items"] or not pfDB["items"]["data"] then return false end
+    if not pfDB["units"] or not pfDB["units"]["loc"] then return false end
+    return true
+end
+
+-- The mob names that drop `itemName`, or false if we cannot tell.
+function GQ.DropSourceNames(itemName)
+    if GQ.config.useQuestDB == false then return false end
+    if GQ.dropNames[itemName] ~= nil then return GQ.dropNames[itemName] end
+    if not GQ.HasQuestDB() then
+        GQ.dropNames[itemName] = false
+        return false
+    end
+
+    local ok, result = pcall(function()
+        local names = {}
+        local unitLoc = pfDB["units"]["loc"]
+        local itemData = pfDB["items"]["data"]
+        local refloot = pfDB["refloot"] and pfDB["refloot"]["data"]
+
+        local function addUnit(unitId)
+            local unitName = unitLoc[unitId]
+            if unitName then names[string.lower(unitName)] = true end
+        end
+
+        for itemId in pairs(pfDatabase:GetIDByName(itemName, "items") or {}) do
+            local entry = itemData[itemId]
+            if entry then
+                for unitId in pairs(entry["U"] or {}) do addUnit(unitId) end
+                -- Shared loot tables: many mobs point at one table rather than
+                -- listing the item themselves, so skipping these would miss most
+                -- of the mobs for a lot of quest drops.
+                for ref in pairs(entry["R"] or {}) do
+                    local shared = refloot and refloot[ref]
+                    for unitId in pairs(shared and shared["U"] or {}) do addUnit(unitId) end
+                end
+            end
+        end
+        return names
+    end)
+
+    GQ.dropNames[itemName] = ok and result or false
+    if not ok then
+        GQ.Debug("quest database lookup failed for " .. tostring(itemName) ..
+            " - drop lines disabled for it")
+    end
+    return GQ.dropNames[itemName]
+end
+
+-- Does this objective apply to the thing being hovered? Either it is named after
+-- it (a kill objective, or the item itself), or it is an item this mob drops.
+function GQ.ObjectiveMatches(objectiveName, loweredTarget)
+    if string.lower(objectiveName) == loweredTarget then return true end
+    local sources = GQ.DropSourceNames(objectiveName)
+    return (sources and sources[loweredTarget]) and true or false
+end
+
 function GQ.LinesFor(target)
     if not target or target == "" then return {} end
     local wanted = string.lower(target)
@@ -474,7 +561,7 @@ function GQ.LinesFor(target)
         if entry and IsInMyGroup(name) and (name ~= me or GQ.config.showSelf) then
             for title, objectives in pairs(entry.quests) do
                 for _, o in ipairs(objectives) do
-                    if string.lower(o.name) == wanted then
+                    if GQ.ObjectiveMatches(o.name, wanted) then
                         if not byQuest[title] then
                             byQuest[title] = {}
                             table.insert(order, title)
@@ -743,6 +830,19 @@ SlashCmdList["GRAYFATHERSQUESTSHARE"] = function(msg)
             end
         end
 
+    elseif cmd == "drops" then
+        if string.lower(words[2] or "") == "off" then
+            GQ.config.useQuestDB = false
+            GQ.Say("drop lines off - only objectives named after what you hover.")
+        else
+            GQ.config.useQuestDB = true
+            GQ.Say("drop lines on" .. (GQ.HasQuestDB() and
+                " - pfQuest's database found." or
+                " |cFFFFCC00but pfQuest's database was not found|r, so nothing changes."))
+        end
+        GQ.dropNames = {}
+        GQ_Config = GQ.config
+
     elseif cmd == "self" then
         if string.lower(words[2] or "") == "on" then
             GQ.config.showSelf = true
@@ -813,7 +913,7 @@ SlashCmdList["GRAYFATHERSQUESTSHARE"] = function(msg)
         end
 
     else
-        GQ.Say("usage: /gq, /gq quests, /gq self on|off, /gq sync, /gq debug")
+        GQ.Say("usage: /gq, /gq quests, /gq self on|off, /gq drops on|off, /gq sync, /gq debug")
     end
 end
 
