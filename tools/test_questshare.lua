@@ -231,19 +231,33 @@ do
         ["Kill Ten Boars"] = { { name = "Mottled Boar", have = 10, need = 10 } },
     } }
 
+    -- Your own progress is OFF by default: pfQuest already shows it on the same
+    -- tooltip, so including it duplicates a number already on screen.
     local lines = a.GQ.LinesFor("Mottled Boar")
     check("one quest matched", table.getn(lines), 1)
     check("  titled", lines[1].title, "Kill Ten Boars")
-    check("  you first, Bob shown as done", lines[1].detail, "you 3/10  -  |cFF66FF66Bob done|r")
+    check("  only the other person by default", lines[1].detail, "|cFF66FF66Bob done|r")
+
+    a.GQ.config.showSelf = true
+    lines = a.GQ.LinesFor("Mottled Boar")
+    check("  self on puts you back, first", lines[1].detail,
+        "you 3/10  -  |cFF66FF66Bob done|r")
+    a.GQ.config.showSelf = nil
 
     -- Case-insensitive, because tooltip capitalisation isn't guaranteed.
     check("case insensitive", table.getn(a.GQ.LinesFor("mottled boar")), 1)
     check("unrelated target matches nothing", table.getn(a.GQ.LinesFor("Kobold Miner")), 0)
 
-    -- An item objective should match the item name.
+    -- An item objective only you are on shows nothing by default, since your own
+    -- line is what is being suppressed.
+    check("an objective only you have is silent by default",
+        table.getn(a.GQ.LinesFor("Boar Hide")), 0)
+
+    a.GQ.config.showSelf = true
     local itemLines = a.GQ.LinesFor("Boar Hide")
-    check("item objective matched", table.getn(itemLines), 1)
-    check("  and only you have it", itemLines[1].detail, "you 2/5")
+    check("  and appears with self on", table.getn(itemLines), 1)
+    check("  reading as yours", itemLines[1].detail, "you 2/5")
+    a.GQ.config.showSelf = nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -285,7 +299,7 @@ do
 
     check("two lines were added", table.getn(added), 2)
     check("  the quest title", added[1], "Kill Ten Boars")
-    check("  and everyone's progress", added[2], "  you 3/10  -  |cFF66FF66Bob done|r")
+    check("  and everyone else's progress", added[2], "  |cFF66FF66Bob done|r")
 
     -- A tooltip whose subject matches no objective must add nothing.
     added = {}
@@ -417,10 +431,123 @@ do
         ["Kill Ten Boars"] = { { name = "Mottled Boar", have = 5, need = 10 } },
     } }
 
-    -- Cara isn't in the party, so her numbers must not be shown even though
-    -- they're still cached this session.
+    -- Cara is not in the party, so her numbers must not be shown even though
+    -- they are still cached this session. With self hidden by default that
+    -- leaves nothing at all to show.
+    check("nothing from someone out of the group", table.getn(a.GQ.LinesFor("Mottled Boar")), 0)
+
+    -- With self on, YOU appear and she still does not - which is what proves
+    -- the group filter is doing the work rather than the self filter.
+    a.GQ.config.showSelf = true
     local lines = a.GQ.LinesFor("Mottled Boar")
     check("only you are listed", lines[1].detail, "you 3/10")
+    a.GQ.config.showSelf = nil
+end
+
+-- ---------------------------------------------------------------------------
+print("a single objective tick sends ONE small message, not the whole log")
+do
+    -- Twenty quests, so a full send would be several chunks. This is the
+    -- slowness that was reported: every kill re-sent the lot.
+    local big = {}
+    for i = 1, 20 do
+        table.insert(big, { title = "Quest Number " .. i, objectives = {
+            { kind = "monster", name = "Creature " .. i, have = 0, need = 10 },
+        } })
+    end
+    local a = newClient("Alice", big, { "Bob" })
+    activate(a)
+
+    a.GQ.UpdateOwnData()
+    a.GQ.SendChanges()                      -- first time: no baseline, full sync
+    while table.getn(a.GQ.sendQueue) > 0 do a.GQ.DrainQueue() end
+    local fullCount = table.getn(a.sent)
+    check("the first send is a full sync of several messages", fullCount > 3, true)
+
+    -- One boar dies.
+    a.sent = {}
+    big[7].objectives[1].have = 1
+    a.GQ.UpdateOwnData()
+    a.GQ.SendChanges()
+    while table.getn(a.GQ.sendQueue) > 0 do a.GQ.DrainQueue() end
+    check("one kill is now a single message", table.getn(a.sent), 1)
+    check("  and it is a delta", string.sub(a.sent[1].msg, 1, 2), "U~")
+    check("  carrying only the quest that moved",
+        string.find(a.sent[1].msg, "Quest Number 7", 1, true) ~= nil, true)
+    check("  and nothing else", string.find(a.sent[1].msg, "Quest Number 8", 1, true), nil)
+end
+
+-- ---------------------------------------------------------------------------
+print("nothing is sent when nothing actually moved")
+do
+    local a = newClient("Alice", ALICE_LOG, { "Bob" })
+    activate(a)
+    a.GQ.UpdateOwnData()
+    a.GQ.SendChanges()
+    while table.getn(a.GQ.sendQueue) > 0 do a.GQ.DrainQueue() end
+
+    -- QUEST_LOG_UPDATE fires plenty of times with no objective change.
+    a.sent = {}
+    a.GQ.UpdateOwnData()
+    a.GQ.SendChanges()
+    while table.getn(a.GQ.sendQueue) > 0 do a.GQ.DrainQueue() end
+    check("an unchanged log sends nothing at all", table.getn(a.sent), 0)
+end
+
+-- ---------------------------------------------------------------------------
+print("accepting or finishing a quest falls back to a full sync")
+do
+    local log = { { title = "First", objectives = {
+        { kind = "monster", name = "Thing", have = 0, need = 5 } } } }
+    local a = newClient("Alice", log, { "Bob" })
+    activate(a)
+    a.GQ.UpdateOwnData(); a.GQ.SendChanges()
+    while table.getn(a.GQ.sendQueue) > 0 do a.GQ.DrainQueue() end
+
+    -- A delta can say "this quest now reads 4/10" but cannot say "this quest is
+    -- gone", so a change in the SET of quests has to go full.
+    a.sent = {}
+    table.insert(log, { title = "Second", objectives = {
+        { kind = "item", name = "Widget", have = 0, need = 2 } } })
+    a.GQ.UpdateOwnData(); a.GQ.SendChanges()
+    while table.getn(a.GQ.sendQueue) > 0 do a.GQ.DrainQueue() end
+    check("a new quest sends something at all", table.getn(a.sent) > 0, true)
+    check("  and it is a full sync",
+        a.sent[1] and string.sub(a.sent[1].msg, 1, 2) or "nothing sent", "H~")
+
+    a.sent = {}
+    table.remove(log, 1)
+    a.GQ.UpdateOwnData(); a.GQ.SendChanges()
+    while table.getn(a.GQ.sendQueue) > 0 do a.GQ.DrainQueue() end
+    check("losing one sends something at all", table.getn(a.sent) > 0, true)
+    check("  and it is a full sync",
+        a.sent[1] and string.sub(a.sent[1].msg, 1, 2) or "nothing sent", "H~")
+end
+
+-- ---------------------------------------------------------------------------
+print("a delta merges into what the receiver already has")
+do
+    local aliceLog = {
+        { title = "Alpha", objectives = { { kind = "monster", name = "Aaa", have = 0, need = 5 } } },
+        { title = "Beta",  objectives = { { kind = "monster", name = "Bbb", have = 0, need = 5 } } },
+    }
+    local a = newClient("Alice", aliceLog, { "Bob" })
+    local b = newClient("Bob", {}, { "Alice" })
+
+    activate(a); a.GQ.UpdateOwnData(); a.GQ.SendChanges()
+    deliver(a, b)
+    activate(b)
+    check("Bob has both quests", b.GQ.data["Alice"].quests["Beta"] ~= nil, true)
+
+    -- Alice advances only Alpha.
+    activate(a)
+    aliceLog[1].objectives[1].have = 3
+    a.GQ.UpdateOwnData(); a.GQ.SendChanges()
+    deliver(a, b)
+
+    activate(b)
+    check("Alpha updated", b.GQ.data["Alice"].quests["Alpha"][1].have, 3)
+    check("  and Beta survived the merge", b.GQ.data["Alice"].quests["Beta"] ~= nil, true)
 end
 
 -- ---------------------------------------------------------------------------

@@ -34,7 +34,7 @@
 GQ = {}
 GQ.ADDON_NAME = "GrayfathersQuestshare"
 GQ.PREFIX     = "GQSHARE"
-GQ.VERSION    = "1.3.0"
+GQ.VERSION    = "1.4.0"
 
 -- [playerName] = { time = <when heard>, quests = { [questTitle] = { {name, have, need}, ... } } }
 GQ.data   = {}
@@ -42,7 +42,7 @@ GQ.config = {}
 
 GQ.MAX_PAYLOAD     = 200
 GQ.SEND_INTERVAL   = 0.4
-GQ.SCAN_DEBOUNCE   = 1.5
+GQ.SCAN_DEBOUNCE   = 0.5  -- QUEST_LOG_UPDATE fires repeatedly per kill; this coalesces them
 GQ.PEER_STALE_AFTER = 300 -- drop someone's progress 5 minutes after their last update
 
 GQ.PRESENCE_INTERVAL = 30 -- seconds between "I'm running this addon" beacons
@@ -245,8 +245,115 @@ function GQ.SendProgress()
         GQ.Queue("D~" .. nonce .. "~" .. i .. "~" ..
             string.sub(payload, from, from + GQ.MAX_PAYLOAD - 1))
     end
+    GQ.lastSent = GQ.CopyQuests(own.quests)
     GQ.dirty = false
-    GQ.Debug("sending " .. total .. " chunk(s), " .. string.len(payload) .. " chars")
+    GQ.Debug("full sync: " .. total .. " chunk(s), " .. string.len(payload) .. " chars")
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- Sending only what changed
+-- ---------------------------------------------------------------------------------------------
+--
+-- Every objective tick used to re-send the WHOLE quest log. With twenty quests
+-- that is six to nine chunks at SEND_INTERVAL apiece, so a single kill took
+-- several seconds to reach the group - and killing again while that drained
+-- queued another entire log behind it, so it fell further behind the more you
+-- were actually playing. That is the slowness.
+--
+-- Almost every change is one objective on one quest, which fits in a single
+-- message. So the common case is now a delta: one quest, one message, there in
+-- the time it takes the queue to tick once.
+--
+-- A full send is still used when the shape of the log changes rather than the
+-- numbers in it - a quest accepted, completed or abandoned - because a delta
+-- can say "this quest now reads 4/10" but has no way to say "this quest is
+-- gone". Those are rare next to objective ticks, so paying full price for them
+-- costs nothing in practice.
+
+local function SameObjectives(a, b)
+    if not a or not b then return false end
+    if table.getn(a) ~= table.getn(b) then return false end
+    for i, o in ipairs(a) do
+        local p = b[i]
+        if not p or p.name ~= o.name or p.have ~= o.have or p.need ~= o.need then
+            return false
+        end
+    end
+    return true
+end
+
+-- Snapshot, so a later scan mutating its own tables can't silently rewrite the
+-- baseline we diff against and make every change look like no change.
+function GQ.CopyQuests(quests)
+    local out = {}
+    for title, objectives in pairs(quests or {}) do
+        local list = {}
+        for i, o in ipairs(objectives) do
+            list[i] = { name = o.name, have = o.have, need = o.need }
+        end
+        out[title] = list
+    end
+    return out
+end
+
+-- Returns the quests whose numbers moved, plus whether the set of quests itself
+-- changed (which a delta cannot express).
+function GQ.DiffQuests(old, new)
+    local changed, structural = {}, false
+
+    for title, objectives in pairs(new) do
+        if not old[title] then
+            structural = true
+        elseif not SameObjectives(old[title], objectives) then
+            changed[title] = objectives
+        end
+    end
+    for title in pairs(old) do
+        if not new[title] then structural = true end
+    end
+
+    return changed, structural
+end
+
+-- The normal path after a quest log change: send a delta if one will do, a full
+-- sync otherwise, and nothing at all when nothing actually moved - QUEST_LOG_UPDATE
+-- fires plenty of times when no objective has changed.
+function GQ.SendChanges()
+    if not GQ.Channel() then return end
+
+    local own = GQ.data[GQ.Me()]
+    if not own then return end
+
+    if not GQ.lastSent then
+        GQ.SendProgress()
+        return
+    end
+
+    local changed, structural = GQ.DiffQuests(GQ.lastSent, own.quests)
+    if structural then
+        GQ.SendProgress()
+        return
+    end
+
+    local count = 0
+    for _ in pairs(changed) do count = count + 1 end
+    if count == 0 then
+        GQ.dirty = false
+        return
+    end
+
+    local payload = GQ.Serialize(changed)
+    if string.len(payload) > GQ.MAX_PAYLOAD then
+        -- Several quests moved at once (a turn-in that advances a chain, say).
+        -- Chunking a delta would need its own reassembly for no real gain.
+        GQ.SendProgress()
+        return
+    end
+
+    GQ.Queue("U~" .. payload)
+    GQ.lastSent = GQ.CopyQuests(own.quests)
+    GQ.dirty = false
+    GQ.Debug("delta: " .. count .. " quest(s), " .. string.len(payload) .. " chars, one message")
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -275,7 +382,26 @@ function GQ.OnAddonMessage(msg, sender)
         return
     end
 
-    if kind == "H" then
+    if kind == "U" then
+        -- A delta: only the quests whose numbers moved. Merge it into what we
+        -- already hold for them rather than replacing, or every unmentioned
+        -- quest would vanish from their entry.
+        local quests = GQ.Deserialize(rest)
+        local entry = GQ.data[sender]
+        if entry and entry.quests then
+            for title, objectives in pairs(quests) do
+                entry.quests[title] = objectives
+            end
+            entry.time = time()
+        else
+            -- No baseline yet - their next full sync will complete it. Better
+            -- to show one quest now than nothing.
+            GQ.data[sender] = { time = time(), quests = quests }
+        end
+        GQ.Debug("delta from " .. tostring(sender))
+        return
+
+    elseif kind == "H" then
         local _, _, nonce, total = string.find(rest, "^(%d+)~(%d+)$")
         if not nonce then return end
         GQ.incoming[sender] = { nonce = nonce, expected = tonumber(total), chunks = {} }
@@ -337,10 +463,15 @@ function GQ.LinesFor(target)
     local wanted = string.lower(target)
 
     -- Collect per quest so one line covers everyone, rather than one line each.
+    -- Your own progress is left out by default. pfQuest (and the default quest
+    -- log) already show it on the same tooltip, so including it duplicates a
+    -- number the player is already looking at. /gq self on puts it back for
+    -- anyone not running a quest addon.
+    local me = GQ.Me()
     local order, byQuest = {}, {}
     for _, name in ipairs(OrderedNames()) do
         local entry = GQ.data[name]
-        if entry and IsInMyGroup(name) then
+        if entry and IsInMyGroup(name) and (name ~= me or GQ.config.showSelf) then
             for title, objectives in pairs(entry.quests) do
                 for _, o in ipairs(objectives) do
                     if string.lower(o.name) == wanted then
@@ -612,6 +743,17 @@ SlashCmdList["GRAYFATHERSQUESTSHARE"] = function(msg)
             end
         end
 
+    elseif cmd == "self" then
+        if string.lower(words[2] or "") == "on" then
+            GQ.config.showSelf = true
+            GQ.Say("your own progress will be shown on tooltips too.")
+        else
+            GQ.config.showSelf = false
+            GQ.Say("your own progress hidden on tooltips - pfQuest and the quest log " ..
+                "already show it. |cFFFFFFFF/gq self on|r to include it.")
+        end
+        GQ_Config = GQ.config
+
     elseif cmd == "sync" then
         if not GQ.Channel() then
             GQ.Say("you're not in a party or raid - there's nobody to share with.")
@@ -671,7 +813,7 @@ SlashCmdList["GRAYFATHERSQUESTSHARE"] = function(msg)
         end
 
     else
-        GQ.Say("usage: /gq, /gq quests, /gq sync, /gq debug")
+        GQ.Say("usage: /gq, /gq quests, /gq self on|off, /gq sync, /gq debug")
     end
 end
 
@@ -725,7 +867,7 @@ ev:SetScript("OnUpdate", function()
         if GQ.scanTimer <= 0 then
             GQ.scanTimer = nil
             GQ.UpdateOwnData()
-            if GQ.dirty and GQ.Channel() then GQ.SendProgress() end
+            if GQ.dirty then GQ.SendChanges() end
         end
     end
 

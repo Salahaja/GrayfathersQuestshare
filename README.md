@@ -1,4 +1,4 @@
-# Grayfather's Questshare (v1.3.0)
+# Grayfather's Questshare (v1.4.0)
 
 Puts your party's quest progress on the tooltip. Hover the mob or the item and see who still needs it:
 
@@ -34,11 +34,14 @@ Everyone who wants to be included needs the addon. Progress is shared automatica
 ```
 /gq            status: who in your group is running this, and what has been shared
 /gq quests     every quest across the group, the ones you share listed first
+/gq self on|off  show your own progress on tooltips too (off by default)
 /gq sync       share right now instead of waiting
 /gq debug      verbose logging of every message sent and received
 ```
 
 Hover any mob or quest item. If anyone in the group has an objective matching it, the lines appear under the normal tooltip.
+
+**Your own progress is left out by default.** pfQuest and the default quest log already put it on the same tooltip, so including it just duplicates a number already on screen. `/gq self on` if you want it anyway.
 
 ### Hovering a quest in your quest log
 
